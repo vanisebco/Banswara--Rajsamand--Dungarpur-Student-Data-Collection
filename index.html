@@ -192,17 +192,38 @@
     .then(r => r.json())
     .then(data => {
       cascade = data;
+      // populate district names (cascade keys are districts)
       populateSelect(document.getElementById('district'), Object.keys(cascade).sort(), '-- Select District --');
     })
     .catch(err => console.error("Error loading cascade_data.json:", err));
 
+  // populateSelect now accepts either:
+  // - an array of strings, or
+  // - an object/map whose keys are the items (useful for blocks/panchayats)
   function populateSelect(selectEl, items, placeholder) {
     selectEl.innerHTML = '';
     const opt0 = document.createElement('option');
     opt0.value = '';
     opt0.textContent = placeholder;
     selectEl.appendChild(opt0);
-    items.forEach(it => {
+
+    if (!items) return;
+
+    let list = [];
+    if (Array.isArray(items)) {
+      list = items.slice(); // copy array
+    } else if (typeof items === 'object') {
+      // items is an object: use its keys as labels
+      list = Object.keys(items);
+    } else {
+      // not iterable
+      return;
+    }
+
+    // sort case-insensitive
+    list.sort((a,b) => a.toString().toLowerCase().localeCompare(b.toString().toLowerCase()));
+
+    list.forEach(it => {
       const o = document.createElement('option');
       o.value = it;
       o.textContent = it;
@@ -212,8 +233,8 @@
 
   function populateDatalist(datalistEl, items) {
     datalistEl.innerHTML = '';
-    // unique & sorted
-    const unique = Array.from(new Set(items)).sort();
+    if (!items || items.length === 0) return;
+    const unique = Array.from(new Set(items)).sort((a,b)=>a.toLowerCase().localeCompare(b.toLowerCase()));
     unique.forEach(it => {
       const o = document.createElement('option');
       o.value = it;
@@ -221,53 +242,103 @@
     });
   }
 
+  // When district changes -> fill blocks
   document.getElementById('district').addEventListener('change', function() {
     const b = document.getElementById('block');
     const p = document.getElementById('panchayat');
     const s = document.getElementById('school');
     const tlist = document.getElementById('teacherList');
+
     b.innerHTML = '<option value="">-- Select Block --</option>';
     p.innerHTML = '<option value="">-- Select Panchayat --</option>';
     s.innerHTML = '<option value="">-- Select School --</option>';
-    tlist.innerHTML = '';
+    if (tlist) tlist.innerHTML = '';
+
     if (!this.value) return;
-    populateSelect(b, Object.keys(cascade[this.value] || {}).sort(), '-- Select Block --');
+    // cascade[this.value] is expected to be an object: blocks as keys
+    populateSelect(b, cascade[this.value], '-- Select Block --');
   });
 
+  // When block changes -> fill panchayats
   document.getElementById('block').addEventListener('change', function() {
     const d = document.getElementById('district').value;
     const p = document.getElementById('panchayat');
     const s = document.getElementById('school');
     const tlist = document.getElementById('teacherList');
+
     p.innerHTML = '<option value="">-- Select Panchayat --</option>';
     s.innerHTML = '<option value="">-- Select School --</option>';
-    tlist.innerHTML = '';
+    if (tlist) tlist.innerHTML = '';
+
     if (!d || !this.value) return;
-    populateSelect(p, Object.keys(cascade[d][this.value] || {}).sort(), '-- Select Panchayat --');
+    // cascade[d][this.value] is expected to be an object: panchayats as keys
+    populateSelect(p, cascade[d][this.value], '-- Select Panchayat --');
   });
 
+  // When panchayat changes -> fill schools (IMPORTANT: schools are arrays in your JSON)
   document.getElementById('panchayat').addEventListener('change', function() {
     const d = document.getElementById('district').value;
     const b = document.getElementById('block').value;
     const s = document.getElementById('school');
     const tlist = document.getElementById('teacherList');
+
     s.innerHTML = '<option value="">-- Select School --</option>';
-    tlist.innerHTML = '';
+    if (tlist) tlist.innerHTML = '';
+
     if (!d || !b || !this.value) return;
-    populateSelect(s, Object.keys(cascade[d][b][this.value] || {}).sort(), '-- Select School --');
+
+    // IMPORTANT: cascade[d][b][this.value] should be an ARRAY of school names.
+    let schoolsArray = [];
+    if (cascade[d] && cascade[d][b] && cascade[d][b][this.value]) {
+      const raw = cascade[d][b][this.value];
+      // if it's an object with numeric keys (rare), convert to array of values
+      if (Array.isArray(raw)) {
+        schoolsArray = raw.slice();
+      } else if (typeof raw === 'object') {
+        // convert object to array of values ordered by numeric keys if possible
+        const keys = Object.keys(raw).sort((x,y) => Number(x)-Number(y));
+        schoolsArray = keys.map(k => raw[k]);
+      }
+    }
+
+    // remove empty strings and trim whitespace
+    schoolsArray = schoolsArray.map(sch => (typeof sch === 'string' ? sch.trim() : sch)).filter(Boolean);
+
+    // populate (populateSelect already sorts)
+    populateSelect(s, schoolsArray, '-- Select School --');
   });
 
+  // When school changes -> populate teacher suggestions (if teachers exist)
   document.getElementById('school').addEventListener('change', function() {
     const d = document.getElementById('district').value;
     const b = document.getElementById('block').value;
     const p = document.getElementById('panchayat').value;
     const tlist = document.getElementById('teacherList');
+    if (!tlist) return;
     tlist.innerHTML = '';
+
     if (!d || !b || !p || !this.value) return;
-    const teachers = cascade[d][b][p][this.value] || [];
+
+    // Your current cascade JSON contains schools as strings (no teachers).
+    // If you later add teacher lists like cascade[d][b][p][schoolName] = ["Teacher A","Teacher B"],
+    // the code below will use them. Otherwise it will leave datalist empty.
+    let teachers = [];
+    try {
+      const maybe = cascade[d][b][p]; // this is an array of school names or object
+      // If maybe is an object keyed by schoolName -> and has teachers: maybe[this.value] is teachers
+      if (maybe && typeof maybe === 'object' && !Array.isArray(maybe) && maybe[this.value]) {
+        const t = maybe[this.value];
+        if (Array.isArray(t)) teachers = t.slice();
+        else if (typeof t === 'object') teachers = Object.values(t);
+      }
+    } catch (e) {
+      teachers = [];
+    }
+    // populate datalist if any
     populateDatalist(tlist, teachers);
   });
 
+  // form handlers (no change)
   function formSubmitted() {
     document.getElementById("successBox").style.display = "block";
     document.getElementById("errorBox").style.display = "none";
@@ -285,7 +356,7 @@
     document.getElementById("successBox").style.display = "none";
     document.getElementById("errorBox").style.display = "none";
   });
-  </script>
+</script>
 <iframe id="hidden_iframe" name="hidden_iframe" style="display:none;"></iframe>
 </body>
 </html>
